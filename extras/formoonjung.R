@@ -75,46 +75,45 @@ population <- PatientLevelPrediction::createStudyPopulation(plpData = plpData,
 connection <- DatabaseConnector::connect(connectionDetails)
 
 covariateSettings <- list()
-#covariateSettings <- FeatureExtraction::createDefaultCovariateSettings()
-covaraiteSettings <- FeatureExtraction::createCovariateSettings(
-  useDemographicsGender = FALSE,
-  useDemographicsAge = FALSE,
-  useDemographicsAgeGroup = FALSE,
-  useConditionOccurrenceShortTerm = FALSE,
-  useVisitCountShortTerm = FALSE,
+covariateSettings <- FeatureExtraction::createDefaultCovariateSettings()
+covariateSettings <- FeatureExtraction::createCovariateSettings(
+  useDemographicsGender = T,
+  useDemographicsAge = T,
+  useDemographicsAgeGroup = T,
+  useConditionOccurrenceShortTerm = T,
+  useVisitCountShortTerm = T,
   shortTermStartDays = -3,
   endDays = 0,
-  useMeasurementValueShortTerm = FALSE,
-  useDrugExposureShortTerm = FALSE,
-  useDrugEraShortTerm = FALSE,
-  useProcedureOccurrenceShortTerm = FALSE
+  useMeasurementValueShortTerm = T,
+  useDrugExposureShortTerm = T,
+  useDrugEraShortTerm = T,
+  useProcedureOccurrenceShortTerm = T
 )
 
-data <- getPlpData(
-  connectionDetails=connectionDetails,
+data <- FeatureExtraction::getDbCovariateData(
+  connectionDetails = connectionDetails,
+  #connection = connection,
+  oracleTempSchema = NULL,
   cdmDatabaseSchema=cdmDatabaseSchema,
-  oracleTempSchema = cdmDatabaseSchema,
-  studyStartDate = 19000101,
-  studyEndDate = 21991231,
-  cohortId=1370,
-  outcomeIds=776,
-  cohortDatabaseSchema = cohortDatabaseSchema,
-  cohortTable = cohortTable,
-  outcomeDatabaseSchema = cohortDatabaseSchema,
-  outcomeTable = cohortTable,
   cdmVersion = "5",
-  firstExposureOnly = FALSE,
-  washoutPeriod = 0,
-  sampleSize = NULL,
-  covariateSettings,
-  excludeDrugsFromCovariates = FALSE
+  cohortTable = cohortTable,
+  cohortDatabaseSchema = cohortDatabaseSchema,
+  cohortTableIsTemp = FALSE,
+  cohortId = -1,
+  rowIdField = "subject_id",
+  covariateSettings=covariateSettings,
+  aggregated = FALSE
 )
 
+
+ref <- dbGetQuery(conn=con, "select * from covariateRef")
 ## connect to db
-con <- dbConnect(drv=RSQLite::SQLite(), dbname=data$covariateData@dbname)
+con <- dbConnect(drv=RSQLite::SQLite(), dbname=data@dbname)
 ## list all tables
 tables <- dbListTables(con)
+#covlist <- dbGetQuery(conn=con, "select * from analysisRef")
 #df <- dbGetQuery(conn=con, "select * from covariates")
+#tempdf <- dbGetQuery(conn=con, "select * from covariates where covariateId = '8507001' or '8532001' or  ")
 covariateIds <- dbGetQuery(conn=con, "select * from covariateRef where conceptId in (8507,
                            8532,
                            3004249,
@@ -149,9 +148,13 @@ covariateIds <- dbGetQuery(conn=con, "select * from covariateRef where conceptId
 
 library(dplyr)
 covariateIds <- paste0(covariateIds$covariateId, collapse = ",")
-#df <- dbGetQuery(conn=con, "select * from covariates")
+#df <- dbGetQuery(conn=con, "select * from covariates limit 10;")
 df <- dbGetQuery(conn=con, paste0("select * from covariates where covariateId IN (", covariateIds, ")"))
 df <- df %>% left_join(dbGetQuery(conn=con, "select * from covariateRef"), by=c("covariateId"="covariateId"))
+df <- df %>% filter()
+
+
+substrRight(covariateId, 3)
 
 population2 <- population
 
@@ -160,7 +163,7 @@ for(i in 1:length(unique(df$conceptId))) {                                    # 
   population2[ , ncol(population2) + 1] <- new                                # Append new column
   colnames(population2)[ncol(population2)] <- paste0("new", i)                # Rename column name
 }
-s
+
 newcolnames <- c(colnames(population2)[1:13], unique(df$conceptId))
 colnames(population2) <- newcolnames
 
@@ -171,3 +174,36 @@ for (i in 14:length(population2)) {
 }
 
 
+df <- population2
+df <- df[,c(8,10,14:length(df))]
+
+label = as.integer(df$outcomeCount)
+
+n <- nrow(df)
+
+train.index = sample(n,floor(0.75*n))
+train.data = as.matrix(df[train.index,])
+train.label = label[train.index]
+test.data = as.matrix(df[-train.index,])
+test.label = label[-train.index]
+
+# 2. L1 regression from glmnet
+library(glmnet)
+lambdas_to_try <- 10^seq(-3, 5, length.out = 100)
+# Setting alpha = 1 implements lasso regression
+lasso_cv <- cv.glmnet(train.data,
+                      train.label,
+                      family="binomial",
+                      alpha = 1,
+                      lambda = lambdas_to_try,
+                      type.measure = "auc",
+                      standardize = TRUE, nfolds = 3)
+plot(lasso_cv)
+
+lambda_cv <- lasso_cv$lambda.min
+# Fit final model, get its sum of squared residuals and multiple R-squared
+model_cv <- glmnet(train.data, train.label, alpha = 1, lambda = lambda_cv, standardize = TRUE, family = "binomial")
+#pred <- predict(model_cv, s = lambda_cv, newx = test.data, type="response")
+lasso_assess <- assess.glmnet(model_cv, newx = test.data, newy = test.label, family="binomial")
+lasso_matrix <- confusion.glmnet(model_cv, newx = test.data, newy = test.label)
+lasso_auc <- roc.glmnet(model_cv, newx = test.data, newy = test.label)
