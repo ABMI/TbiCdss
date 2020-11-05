@@ -1,9 +1,11 @@
 library(PatientLevelPrediction)
 library(TBIv1)
+library(dplyr)
+library(glmnet)
 
 ##connection server
 # add details of your database setting:
-databaseName <- 'add a shareable name for the database you are currently validating on'
+# databaseName <- 'add a shareable name for the database you are currently validating on'
 
 # add the cdm database schema with the data
 cdmDatabaseSchema <- 'your cdm database schema for the validation'
@@ -18,7 +20,7 @@ oracleTempSchema <- NULL
 cohortTable <- 'MortalityWithLabResults'
 
 # the location to save the prediction models results to:
-outputFolder <- '~/output/MortalityWithLabResults'
+outputFolder <- '~/MortalityWithLabResults'
 
 # add connection details:
 options(fftempdir = 'T:/fftemp')
@@ -30,7 +32,7 @@ port <- Sys.getenv('port')
 connectionDetails <- DatabaseConnector::createConnectionDetails(dbms = dbms,
                                                                 server = server,
                                                                 user = user,
-                                                                password = pw,
+                                                                password = pw),
                                                                 port = port)
 
 
@@ -48,14 +50,13 @@ createCohorts(connectionDetails,
 # 1370 JMPark_Hospitalized_patients_with_intensive_care
 # 1373 JMPark_Hospitalized_TBI_patients_with_intensive_care
 
-
 covariateSettings <- FeatureExtraction::createCovariateSettings(useDemographicsGender = T,
                                                                 useDemographicsAge = T,
                                                                 useDemographicsAgeGroup = T)
 
 plpData <- PatientLevelPrediction::getPlpData(connectionDetails,
                                               cdmDatabaseSchema = cdmDatabaseSchema,
-                                              cohortId = 1370, outcomeIds = 776,
+                                              cohortId = 1370, outcomeIds = 776, # cohortId = 1373,
                                               cohortDatabaseSchema = cohortDatabaseSchema,
                                               outcomeDatabaseSchema = cohortDatabaseSchema,
                                               cohortTable = cohortTable,
@@ -75,7 +76,6 @@ population <- PatientLevelPrediction::createStudyPopulation(plpData = plpData,
 connection <- DatabaseConnector::connect(connectionDetails)
 
 covariateSettings <- list()
-covariateSettings <- FeatureExtraction::createDefaultCovariateSettings()
 covariateSettings <- FeatureExtraction::createCovariateSettings(
   useDemographicsGender = T,
   useDemographicsAge = T,
@@ -87,6 +87,7 @@ covariateSettings <- FeatureExtraction::createCovariateSettings(
   useMeasurementValueShortTerm = T,
   useDrugExposureShortTerm = T,
   useDrugEraShortTerm = T,
+  useDistinctIngredientCountShortTerm = T, #
   useProcedureOccurrenceShortTerm = T
 )
 
@@ -105,17 +106,16 @@ data <- FeatureExtraction::getDbCovariateData(
   aggregated = FALSE
 )
 
-
-ref <- dbGetQuery(conn=con, "select * from covariateRef")
 ## connect to db
 con <- dbConnect(drv=RSQLite::SQLite(), dbname=data@dbname)
+
+ref <- dbGetQuery(conn=con, "select * from covariateRef")
 ## list all tables
 tables <- dbListTables(con)
 #covlist <- dbGetQuery(conn=con, "select * from analysisRef")
 #df <- dbGetQuery(conn=con, "select * from covariates")
 #tempdf <- dbGetQuery(conn=con, "select * from covariates where covariateId = '8507001' or '8532001' or  ")
-covariateIds <- dbGetQuery(conn=con, "select * from covariateRef where conceptId in (8507,
-                           8532,
+covariateIds <- dbGetQuery(conn=con, "select * from covariateRef where conceptId in (
                            3004249,
                            3012888,
                            3027018,
@@ -146,15 +146,12 @@ covariateIds <- dbGetQuery(conn=con, "select * from covariateRef where conceptId
 
 )")
 
-library(dplyr)
+
 covariateIds <- paste0(covariateIds$covariateId, collapse = ",")
 #df <- dbGetQuery(conn=con, "select * from covariates limit 10;")
 df <- dbGetQuery(conn=con, paste0("select * from covariates where covariateId IN (", covariateIds, ")"))
 df <- df %>% left_join(dbGetQuery(conn=con, "select * from covariateRef"), by=c("covariateId"="covariateId"))
 df <- df %>% filter()
-
-
-substrRight(covariateId, 3)
 
 population2 <- population
 
@@ -173,22 +170,40 @@ for (i in 14:length(population2)) {
   population2[idx,i] <- 1
 }
 
-
 df <- population2
-df <- df[,c(8,10,14:length(df))]
+df <- df[,c(8:10, 14,15, 18:length(df))]
+df$gender <- ifelse(df$gender=='8532', 0, 1)
 
 label = as.integer(df$outcomeCount)
+# table(label)
+# label
+# 0     1
+# 56388  7765
 
 n <- nrow(df)
+# ncol(df)
+# [1] 19
+# df %>% colSums()
 
 train.index = sample(n,floor(0.75*n))
-train.data = as.matrix(df[train.index,])
+# train.data = as.matrix(df[train.index,])
+train.data = as.matrix(df[train.index,c(1,2, 4:ncol(df))])
 train.label = label[train.index]
-test.data = as.matrix(df[-train.index,])
+# table(train.label)
+# train.label
+# 0     1
+# 42280  5834
+
+# test.data = as.matrix(df[-train.index,])
+test.data = as.matrix(df[-train.index,c(1,2, 4:ncol(df))])
+# test.data = as.matrix(df[-train.index,c(1,2)])
 test.label = label[-train.index]
+# table(test.label)
+# test.label
+# 0     1
+# 14108  1931
 
 # 2. L1 regression from glmnet
-library(glmnet)
 lambdas_to_try <- 10^seq(-3, 5, length.out = 100)
 # Setting alpha = 1 implements lasso regression
 lasso_cv <- cv.glmnet(train.data,
@@ -197,13 +212,23 @@ lasso_cv <- cv.glmnet(train.data,
                       alpha = 1,
                       lambda = lambdas_to_try,
                       type.measure = "auc",
-                      standardize = TRUE, nfolds = 3)
+                      standardize = TRUE,
+                      nfolds = 3)
 plot(lasso_cv)
-
 lambda_cv <- lasso_cv$lambda.min
 # Fit final model, get its sum of squared residuals and multiple R-squared
-model_cv <- glmnet(train.data, train.label, alpha = 1, lambda = lambda_cv, standardize = TRUE, family = "binomial")
-#pred <- predict(model_cv, s = lambda_cv, newx = test.data, type="response")
+model_cv <- glmnet(train.data,
+                   train.label,
+                   alpha = 1,
+                   lambda = lambda_cv,
+                   type.measure = "auc",
+                   family = "binomial")
+# plot(model_cv)
+# model_cv <- glmnet(train.data, train.label, alpha = 1, lambda = lambdas_to_try, standardize = TRUE, family = "binomial")
+pred <- predict(model_cv, s = lambda_cv, newx = test.data, type="response")
+#plot(pred)
+# coef(lasso_cv,s=lambda_cv)
 lasso_assess <- assess.glmnet(model_cv, newx = test.data, newy = test.label, family="binomial")
-lasso_matrix <- confusion.glmnet(model_cv, newx = test.data, newy = test.label)
-lasso_auc <- roc.glmnet(model_cv, newx = test.data, newy = test.label)
+lasso_matrix <- confusion.glmnet(model_cv, newx = test.data, newy = test.label, family="binomial")
+lasso_auc <- roc.glmnet(model_cv, newx = test.data, newy = test.label, family="binomial")
+
