@@ -32,7 +32,7 @@ port <- Sys.getenv('port')
 connectionDetails <- DatabaseConnector::createConnectionDetails(dbms = dbms,
                                                                 server = server,
                                                                 user = user,
-                                                                password = pw),
+                                                                password = pw,
                                                                 port = port)
 
 
@@ -186,49 +186,53 @@ n <- nrow(df)
 # df %>% colSums()
 
 train.index = sample(n,floor(0.75*n))
-# train.data = as.matrix(df[train.index,])
-train.data = as.matrix(df[train.index,c(1,2, 4:ncol(df))])
+train.data = df[train.index,]
+# train.data = df[train.index,c(1,2, 4:ncol(df))]
 train.label = label[train.index]
 # table(train.label)
-# train.label
-# 0     1
-# 42280  5834
 
-# test.data = as.matrix(df[-train.index,])
-test.data = as.matrix(df[-train.index,c(1,2, 4:ncol(df))])
+test.data = df[-train.index,]
+# test.data = df[-train.index,c(1,2, 4:ncol(df))]
 # test.data = as.matrix(df[-train.index,c(1,2)])
 test.label = label[-train.index]
 # table(test.label)
-# test.label
-# 0     1
-# 14108  1931
 
 # 2. L1 regression from glmnet
 lambdas_to_try <- 10^seq(-3, 5, length.out = 100)
 # Setting alpha = 1 implements lasso regression
-lasso_cv <- cv.glmnet(train.data,
-                      train.label,
-                      family="binomial",
-                      alpha = 1,
-                      lambda = lambdas_to_try,
-                      type.measure = "auc",
-                      standardize = TRUE,
-                      nfolds = 3)
-plot(lasso_cv)
-lambda_cv <- lasso_cv$lambda.min
-# Fit final model, get its sum of squared residuals and multiple R-squared
-model_cv <- glmnet(train.data,
-                   train.label,
-                   alpha = 1,
-                   lambda = lambda_cv,
-                   type.measure = "auc",
-                   family = "binomial")
-# plot(model_cv)
-# model_cv <- glmnet(train.data, train.label, alpha = 1, lambda = lambdas_to_try, standardize = TRUE, family = "binomial")
-pred <- predict(model_cv, s = lambda_cv, newx = test.data, type="response")
-#plot(pred)
-# coef(lasso_cv,s=lambda_cv)
-lasso_assess <- assess.glmnet(model_cv, newx = test.data, newy = test.label, family="binomial")
-lasso_matrix <- confusion.glmnet(model_cv, newx = test.data, newy = test.label, family="binomial")
-lasso_auc <- roc.glmnet(model_cv, newx = test.data, newy = test.label, family="binomial")
+# lasso_cv <- cv.glmnet(as.matrix(train.data),
+#                       as.factor(train.label),
+#                       family="binomial",
+#                       alpha = 1,
+#                       lambda = lambdas_to_try,
+#                       type.measure = "class",
+#                       standardize = TRUE,
+#                       nfolds = 3)
 
+model <- glm(outcomeCount ~., data = train.data, family = 'binomial')
+summary(model)
+model$coefficients
+
+prob <- model %>% predict(test.data, type='response')
+
+# plot(lasso_cv)
+# lambda_cv <- lasso_cv$lambda.min
+# # Fit final model, get its sum of squared residuals and multiple R-squared
+# model_cv <- glmnet(as.matrix(train.data),
+#                    as.factor(train.label),
+#                    alpha = 1,
+#                    lambda = lambda_cv,
+#                    type.measure = "class",
+#                    family = "binomial",
+#                    standardize = TRUE,
+#                    nfolds = 3)
+# # plot(model_cv)
+# # model_cv <- glmnet(train.data, train.label, alpha = 1, lambda = lambdas_to_try, standardize = TRUE, family = "binomial")
+# pred <- predict(model_cv, s = lambda_cv, newx = as.matrix(test.data), type="class")
+# table(test.label, pred)
+# #plot(pred)
+# coef(lasso_cv,s=lambda_cv)
+#
+# lasso_assess <- assess.glmnet(model_cv, newx = as.matrix(test.data), newy = test.label, family="binomial")
+# lasso_matrix <- confusion.glmnet(model_cv, newx = as.matrix(test.data), newy = test.label, family="binomial")
+# lasso_auc <- roc.glmnet(model_cv, newx = as.matrix(test.data), newy = test.label, family="binomial")
